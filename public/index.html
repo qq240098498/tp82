@@ -56,6 +56,35 @@
 
     <section class="panel">
       <div class="panel-head">
+        <h2>版本对照</h2>
+        <div class="filters">
+          <label class="inline-check"><input type="checkbox" id="version-only-diff" checked>只看版本不一致</label>
+          <input id="version-keyword" placeholder="按依赖名搜索" maxlength="60">
+          <button type="button" id="version-search">查询</button>
+          <button type="button" id="version-refresh" class="ghost">刷新</button>
+        </div>
+      </div>
+      <div class="panel-tip" id="version-summary">正在汇总各项目的依赖登记…</div>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>依赖名称</th>
+              <th>使用项目数</th>
+              <th>版本分布</th>
+              <th>是否一致</th>
+              <th>建议统一到</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="version-body"></tbody>
+        </table>
+      </div>
+      <p class="empty-tip hidden" id="version-empty">当前条件下没有依赖登记</p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
         <h2>依赖登记</h2>
         <div class="filters">
           <select id="filter-project"><option value="">全部项目</option></select>
@@ -112,6 +141,16 @@
       </form>
     </section>
   </main>
+
+  <div class="modal-mask hidden" id="modal-mask">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <h3 id="modal-title">版本对照明细</h3>
+        <button type="button" class="link" id="modal-close">关闭</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

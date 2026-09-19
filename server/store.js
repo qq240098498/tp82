@@ -13,9 +13,9 @@ const MAX_NOTE_LENGTH = 200;
 const UNASSIGNED = '未指定';
 const STATUSES = ['在用', '待升', '已弃用'];
 
-// 初始数据：三个项目、十八条依赖登记。里面故意留了几种情况：
-// 同一个依赖在两个项目里版本不一致、几条没写责任人、一条没写许可、
-// 一条停在待升状态很久、一条已经弃用，另一种是同一依赖只在单个项目里出现过
+// 初始数据：三个项目、十九条依赖登记。里面故意留了几种情况：
+// 同一个依赖在三个项目里登记、两个版本（其中两个项目版本相同）、几条没写责任人、
+// 一条没写许可、一条停在待升状态很久、一条已经弃用，另一种是同一依赖只在单个项目里出现过
 function seedData() {
   return {
     projects: [
@@ -42,6 +42,7 @@ function seedData() {
       { id: 'dep-2016', projectId: 'proj-1003', name: 'typescript', version: '5.2.2', license: 'Apache-2.0', owner: '王凯', status: '在用', note: '编译与类型检查', createdAt: '2026-08-28T04:10:00.000Z', updatedAt: '2026-09-08T07:40:00.000Z' },
       { id: 'dep-2017', projectId: 'proj-1003', name: 'vite', version: '5.0.10', license: 'MIT', owner: '王凯', status: '在用', note: '本地构建', createdAt: '2026-08-28T04:12:00.000Z', updatedAt: '2026-09-08T07:42:00.000Z' },
       { id: 'dep-2018', projectId: 'proj-1003', name: 'xml-parser', version: '0.9.2', license: 'GPL-3.0', owner: '', status: '在用', note: '解析对账文件用，许可需要复核', createdAt: '2026-09-01T02:00:00.000Z', updatedAt: '2026-09-08T07:50:00.000Z' },
+      { id: 'dep-2019', projectId: 'proj-1003', name: 'spring-boot', version: '2.7.18', license: 'Apache-2.0', owner: '王凯', status: '在用', note: '页面服务端渲染用，与订单服务同版本', createdAt: '2026-09-02T03:00:00.000Z', updatedAt: '2026-09-12T08:00:00.000Z' },
     ],
   };
 }

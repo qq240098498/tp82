@@ -6,6 +6,10 @@ const state = {
   licenses: [],
   statuses: [],
   editingId: '',
+  versionItems: [],
+  versionTotals: { dependencyCount: 0, inconsistentCount: 0, projectCount: 0 },
+  // 弹层上下文：当前下钻的依赖名、选中的目标版本、所处阶段与最近一次预演结果
+  modal: { name: '', detail: null, targetVersion: '', preview: null, stage: 'detail' },
 };
 
 const el = (id) => document.getElementById(id);
@@ -120,6 +124,8 @@ async function loadDeps() {
   state.statuses = payload.statuses || [];
   renderDepFilterOptions();
   renderDeps();
+  // 登记有任何增删改后都会走这里，顺手把版本对照也刷新
+  loadVersions();
 }
 
 function renderProjects() {
@@ -200,6 +206,289 @@ function renderDeps() {
     </tr>`;
   }).join('');
   el('dep-empty').classList.toggle('hidden', state.deps.length > 0);
+}
+
+// ============ 版本对照：汇总、下钻、统一预演与执行 ============
+
+async function loadVersions() {
+  const params = new URLSearchParams();
+  if (el('version-only-diff').checked) params.set('onlyInconsistent', 'true');
+  const keyword = el('version-keyword').value.trim();
+  if (keyword) params.set('keyword', keyword);
+  const query = params.toString();
+  let failed = false;
+  try {
+    const payload = await request(`/api/versions${query ? `?${query}` : ''}`);
+    state.versionItems = payload.versions || [];
+    state.versionTotals = payload.totals || state.versionTotals;
+  } catch (err) {
+    failed = true;
+    state.versionItems = [];
+    el('version-summary').textContent = `汇总失败：${err.message}`;
+  }
+  renderVersions(failed);
+}
+
+function renderVersions(loadFailed) {
+  if (loadFailed) {
+    el('version-body').innerHTML = '';
+    el('version-empty').classList.add('hidden');
+    return;
+  }
+  const totals = state.versionTotals;
+  el('version-summary').textContent = `共 ${totals.dependencyCount} 种依赖、${totals.projectCount} 个项目；其中 ${totals.inconsistentCount} 种依赖在项目间版本不一致`
+    + (el('version-only-diff').checked ? '（当前只列不一致的）' : '');
+
+  const body = el('version-body');
+  body.innerHTML = state.versionItems.map((item) => {
+    const dist = item.versions.map((v) => {
+      const picked = item.recommendation && item.recommendation.version === v.version;
+      return `<span class="ver-chip${picked ? ' picked' : ''}" title="${picked ? '建议统一到这个版本' : ''}">${escapeHtml(v.version)}<b>×${v.count}</b>${picked ? ' ★' : ''}</span>`;
+    }).join(' ');
+    const status = item.consistent
+      ? '<span class="tag off">一致</span>'
+      : '<span class="tag warn">不一致</span>';
+    const advice = item.consistent
+      ? '<span class="missing">无需统一</span>'
+      : `<div class="advice"><span class="mono">${escapeHtml(item.recommendation.version)}</span><span>${escapeHtml(item.recommendation.reason)}</span></div>`;
+    return `<tr>
+      <td class="mono">${escapeHtml(item.name)}</td>
+      <td>${item.projectCount} 个（${item.distinctVersionCount} 个版本）</td>
+      <td>${dist}</td>
+      <td>${status}</td>
+      <td>${advice}</td>
+      <td class="actions">
+        <button type="button" class="link" data-version-detail="${escapeHtml(item.name)}">${item.consistent ? '查看明细' : '下钻 / 统一'}</button>
+      </td>
+    </tr>`;
+  }).join('');
+  el('version-empty').classList.toggle('hidden', state.versionItems.length > 0);
+}
+
+function openModal() {
+  el('modal-mask').classList.remove('hidden');
+}
+
+function closeModal() {
+  el('modal-mask').classList.add('hidden');
+  state.modal = { name: '', detail: null, targetVersion: '', preview: null, stage: 'detail' };
+}
+
+function setModalBody(html) {
+  el('modal-body').innerHTML = html;
+}
+
+function modalError(message) {
+  const box = el('modal-error');
+  if (box) {
+    box.textContent = message;
+    box.classList.remove('hidden');
+  }
+}
+
+// 下钻：列出该依赖在每个项目里的具体登记、版本高低关系与推荐依据
+async function openVersionDetail(name) {
+  state.modal = { name, detail: null, targetVersion: '', preview: null, stage: 'detail' };
+  el('modal-title').textContent = `版本对照明细：${name}`;
+  openModal();
+  setModalBody('<p class="empty-tip">正在读取登记明细…</p>');
+  try {
+    const detail = await request(`/api/versions/detail?name=${encodeURIComponent(name)}`);
+    state.modal.detail = detail;
+    state.modal.targetVersion = detail.recommendation.version;
+    renderDetailView();
+  } catch (err) {    setModalBody(`<p class="empty-tip">读取失败：${escapeHtml(err.message)}</p>`);
+  }
+}
+
+// 版本从低到高的关系，相邻版本之间差在第几段数字一并列出来
+function versionOrderHtml(detail) {
+  const chain = detail.order.map((step) => {
+    const arrow = step.gapFromPrevious
+      ? `<span class="gap-hint" title="${escapeHtml(step.gapFromPrevious.segmentLabel)}：${escapeHtml(step.gapFromPrevious.detail)}">▲ 差在${escapeHtml(step.gapFromPrevious.segmentLabel.replace(/（.*）/, ''))}</span>`
+      : '<span class="gap-hint">最低</span>';
+    return `<div class="order-step">
+        <span class="mono">${escapeHtml(step.version)}</span>
+        ${arrow}
+      </div>`;
+  }).join('<div class="order-connect">↑</div>');
+  const gaps = detail.order
+    .filter((step) => step.gapFromPrevious)
+    .map((step) => `<li><span class="mono">${escapeHtml(step.gapFromPrevious.from)}</span> → <span class="mono">${escapeHtml(step.gapFromPrevious.to)}</span>：${escapeHtml(step.gapFromPrevious.detail)}</li>`)
+    .join('');
+  return `<div class="detail-block">
+      <h4>版本高低关系</h4>
+      <div class="order-chain">${chain}</div>
+      <ul class="gap-list">${gaps}</ul>
+      <div class="basis-line">最高版本为 <span class="mono">${escapeHtml(detail.highestVersion)}</span>；
+        推荐 <span class="mono strong">${escapeHtml(detail.recommendation.version)}</span> 的依据：${escapeHtml(detail.recommendation.reason)}</div>
+    </div>`;
+}
+
+function entriesTableHtml(entries, highlightVersion) {
+  const rows = entries.map((entry) => {
+    const different = highlightVersion && entry.version !== highlightVersion;
+    return `<tr${different ? ' class="row-diff"' : ''}>
+      <td>${escapeHtml(entry.projectName)}</td>
+      <td class="mono">${escapeHtml(entry.version)}${different ? ' <span class="tag warn">待改</span>' : ''}</td>
+      <td>${entry.license ? escapeHtml(entry.license) : '<span class="missing">未填</span>'}</td>
+      <td>${entry.owner ? escapeHtml(entry.owner) : '<span class="missing">未指定</span>'}</td>
+      <td><span class="tag ${entry.status === '已弃用' ? 'off' : 'on'}">${escapeHtml(entry.status)}</span></td>
+      <td class="note-cell">${escapeHtml(entry.note)}</td>
+      <td class="mono">${escapeHtml(formatTime(entry.updatedAt))}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap">
+      <table class="grid">
+        <thead><tr><th>项目</th><th>登记版本</th><th>许可</th><th>责任人</th><th>状态</th><th>备注</th><th>更新时间</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderDetailView() {
+  state.modal.stage = 'detail';
+  const detail = state.modal.detail;
+  const options = detail.order.map((step) => {
+    const count = (detail.versions.find((v) => v.version === step.version) || {}).count || '';
+    return `<option value="${escapeHtml(step.version)}"${step.version === state.modal.targetVersion ? ' selected' : ''}>${escapeHtml(step.version)}（${count} 个项目在用，第 ${step.rank} 高）</option>`;
+  }).join('');
+
+  const unifyBox = detail.consistent ? '' : `
+    <div class="detail-block unify-box">
+      <h4>统一版本</h4>
+      <div class="unify-controls">
+        <label data-field="targetVersion">统一到
+          <select id="unify-target">${options}</select>
+        </label>
+        <button type="button" id="unify-preview-btn">预演这次统一</button>
+      </div>
+      <p class="panel-tip">预演只计算改动清单、不会落盘；确认执行后才会真正修改登记。</p>
+    </div>`;
+
+  setModalBody(`
+    <div class="notice error hidden" id="modal-error"></div>
+    <div class="detail-block">
+      <h4>登记明细（${detail.entries.length} 条，分布在 ${detail.projectCount} 个项目）</h4>
+      ${entriesTableHtml(detail.entries, detail.consistent ? '' : state.modal.targetVersion)}
+    </div>
+    ${versionOrderHtml(detail)}
+    ${unifyBox}
+    <div class="modal-actions">
+      <button type="button" class="ghost" id="modal-back">关闭</button>
+    </div>`);
+}
+
+// 预演：把要改的登记、从什么版本改成什么版本先摆出来
+async function runPreview() {
+  const select = el('unify-target');
+  const targetVersion = select ? select.value : state.modal.targetVersion;
+  state.modal.targetVersion = targetVersion;
+  modalErrorClear();
+  if (!targetVersion) return;
+  try {
+    const payload = await request('/api/versions/unify/preview', {
+      method: 'POST',
+      body: JSON.stringify({ name: state.modal.name, targetVersion }),
+    });
+    state.modal.preview = payload.preview;
+    renderPreviewView();
+  } catch (err) {
+    modalError(err.message);
+  }
+}
+
+function modalErrorClear() {
+  const box = el('modal-error');
+  if (box) {
+    box.textContent = '';
+    box.classList.add('hidden');
+  }
+}
+
+function renderPreviewView() {
+  state.modal.stage = 'preview';
+  const preview = state.modal.preview;
+  if (preview.changeCount === 0) {
+    setModalBody(`
+      <div class="notice ok">${escapeHtml(preview.name)} 所有登记已经都是 ${escapeHtml(preview.targetVersion)}，没有需要改的条目。</div>
+      <div class="modal-actions"><button type="button" id="modal-back">返回明细</button></div>`);
+    return;
+  }
+  const changeRows = preview.changes.map((item) => `
+    <tr class="row-diff">
+      <td>${escapeHtml(item.projectName)}</td>
+      <td class="mono">${escapeHtml(item.fromVersion)}</td>
+      <td class="change-arrow">→</td>
+      <td class="mono strong">${escapeHtml(item.toVersion)}</td>
+      <td>${item.owner ? escapeHtml(item.owner) : '<span class="missing">未指定</span>'}</td>
+      <td><span class="tag ${item.status === '已弃用' ? 'off' : 'on'}">${escapeHtml(item.status)}</span></td>
+    </tr>`).join('');
+  const unchangedText = preview.unchanged
+    .map((item) => `${item.projectName}（${item.version}）`)
+    .join('、');
+  const affectedProjectCount = new Set(preview.changes.map((item) => item.projectId)).size;
+
+  setModalBody(`
+    <div class="notice error hidden" id="modal-error"></div>
+    <div class="detail-block">
+      <h4>预演：统一 <span class="mono">${escapeHtml(preview.name)}</span> 到 <span class="mono strong">${escapeHtml(preview.targetVersion)}</span></h4>
+      <p>将有 <b>${preview.changeCount}</b> 条登记被修改，涉及 <b>${affectedProjectCount}</b> 个项目；
+        其余 ${preview.unchanged.length} 条${preview.unchanged.length ? `（${escapeHtml(unchangedText)}）` : ''}保持不动。</p>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead><tr><th>项目</th><th>当前版本</th><th></th><th>改成</th><th>责任人</th><th>状态</th></tr></thead>
+          <tbody>${changeRows}</tbody>
+        </table>
+      </div>
+      <p class="panel-tip">只改版本号，许可、责任人、状态与备注都保持原样。确认后无法在页面上撤销，请核对后再执行。</p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" id="unify-confirm-btn">确认执行统一</button>
+      <button type="button" class="ghost" id="modal-back">返回修改目标版本</button>
+    </div>`);
+}
+
+// 执行：落盘后展示这次到底改了哪些项目、从什么版本改成什么版本
+async function confirmUnify() {
+  modalErrorClear();
+  try {
+    const payload = await request('/api/versions/unify', {
+      method: 'POST',
+      body: JSON.stringify({ name: state.modal.name, targetVersion: state.modal.targetVersion }),
+    });
+    state.modal.preview = null;
+    renderResultView(payload.result);
+    // 背景里的两张表同步刷新
+    await loadProjects();
+    await loadDeps();
+  } catch (err) {
+    modalError(err.message);
+  }
+}
+
+function renderResultView(result) {
+  state.modal.stage = 'result';
+  const rows = result.changes.map((item) => `
+    <tr class="row-diff">
+      <td>${escapeHtml(item.projectName)}</td>
+      <td class="mono">${escapeHtml(item.fromVersion)}</td>
+      <td class="change-arrow">→</td>
+      <td class="mono strong">${escapeHtml(item.toVersion)}</td>
+    </tr>`).join('');
+  setModalBody(`
+    <div class="notice ok">统一完成：<span class="mono">${escapeHtml(result.name)}</span> 已全部统一到 <span class="mono">${escapeHtml(result.targetVersion)}</span>，共修改 ${result.changeCount} 条登记、${result.projectCount} 个项目。</div>
+    <div class="detail-block">
+      <h4>本次改动</h4>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead><tr><th>项目</th><th>改动前</th><th></th><th>改动后</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <p class="panel-tip">执行时间：${escapeHtml(formatTime(result.changedAt))}</p>
+    </div>
+    <div class="modal-actions"><button type="button" id="modal-back">关闭</button></div>`);
 }
 
 function openDepForm(dep) {
@@ -312,6 +601,36 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  if (node.dataset.versionDetail) {
+    clearNotice();
+    openVersionDetail(node.dataset.versionDetail);
+    return;
+  }
+
+  if (node.id === 'unify-preview-btn') {
+    runPreview();
+    return;
+  }
+
+  if (node.id === 'unify-confirm-btn') {
+    await confirmUnify();
+    return;
+  }
+  if (node.id === 'modal-back') {
+    // 明细/预演页返回即回到明细；结果页返回直接关弹层
+    if (state.modal.stage === 'result') {
+      closeModal();
+    } else {
+      renderDetailView();
+    }
+    return;
+  }
+
+  if (node.id === 'modal-close') {
+    closeModal();
+    return;
+  }
+
   if (node.dataset.depEdit) {
     clearNotice();
     const found = state.deps.find((item) => item.id === node.dataset.depEdit);
@@ -374,6 +693,38 @@ el('filter-license').addEventListener('change', () => {
 });
 el('operator').addEventListener('change', () => {
   window.localStorage.setItem(OPERATOR_KEY, currentOperator());
+});
+
+// 版本对照面板：筛选条件变化与查询按钮
+el('version-search').addEventListener('click', () => {
+  clearNotice();
+  loadVersions();
+});
+el('version-keyword').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    loadVersions();
+  }
+});
+el('version-only-diff').addEventListener('change', () => loadVersions());
+el('version-refresh').addEventListener('click', () => {
+  clearNotice();
+  loadVersions();
+});
+
+// 点遮罩空白处或按 Esc 关闭弹层，点弹层本身不关
+el('modal-mask').addEventListener('click', (event) => {
+  if (event.target === el('modal-mask')) closeModal();
+});
+// 明细页切换目标版本时，重绘一次让“待改”标记跟着新版本走
+el('modal-body').addEventListener('change', (event) => {
+  if (event.target.id === 'unify-target' && state.modal.stage === 'detail') {
+    state.modal.targetVersion = event.target.value;
+    renderDetailView();
+  }
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !el('modal-mask').classList.contains('hidden')) closeModal();
 });
 
 // 页面打开时先把项目与依赖登记拉一遍，项目决定登记表单里能选哪些归属

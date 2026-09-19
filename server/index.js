@@ -84,6 +84,41 @@ app.delete('/api/deps/:id', (req, res) => {
   }
 });
 
+// 版本对照：按依赖名汇总各项目登记，不一致的可以下钻到具体项目与条目
+app.get('/api/versions', (req, res) => {
+  const result = api.listVersions({
+    onlyInconsistent: api.readQuery(req.query, 'onlyInconsistent'),
+    keyword: api.readQuery(req.query, 'keyword'),
+  });
+  res.json(result);
+});
+
+// 依赖名可能带斜线（例如 @types/node），明细用查询参数传名字，避免路径转义问题
+app.get('/api/versions/detail', (req, res) => {
+  try {
+    res.json(api.getVersionDetail(api.readQuery(req.query, 'name')));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 统一版本：先预演（只算不写），操作者在页面上确认后再真正执行
+app.post('/api/versions/unify/preview', (req, res) => {
+  try {
+    res.json(api.previewUnify(req.body));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.post('/api/versions/unify', (req, res) => {
+  try {
+    res.json(api.executeUnify(req.body));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 // 未匹配到的接口路径统一返回说明，避免前端拿到一串页面内容
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: { code: 'API_NOT_FOUND', message: '接口不存在', field: '' } });
