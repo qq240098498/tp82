@@ -6,6 +6,10 @@ const state = {
   licenses: [],
   statuses: [],
   editingId: '',
+  summaryRows: [],
+  detailName: '',
+  detail: null,
+  previewPlan: null,
 };
 
 const el = (id) => document.getElementById(id);
@@ -239,8 +243,7 @@ async function submitProject(event) {
     el('project-owner').value = '';
     el('project-note').value = '';
     notify('项目已新增', 'ok');
-    await loadProjects();
-    await loadDeps();
+    await refreshAll();
   } catch (err) {
     notify(err.message, 'error');
     markField(err.field);
@@ -270,12 +273,231 @@ async function submitDep(event) {
       notify('依赖登记已新增', 'ok');
     }
     closeDepForm();
-    await loadProjects();
-    await loadDeps();
+    await refreshAll();
   } catch (err) {
     notify(err.message, 'error');
     markField(err.field);
   }
+}
+
+// 项目或登记发生变动后，三个区连同已展开的明细一起刷新
+async function refreshAll() {
+  await loadProjects();
+  await loadDeps();
+  await loadConsistency();
+  if (state.detailName) {
+    try {
+      await openDetail(state.detailName);
+    } catch (err) {
+      closeDetail();
+    }
+  }
+}
+
+// ===== 版本对照：按依赖汇总、下钻明细、统一版本（预演 + 执行）=====
+
+async function loadConsistency() {
+  const params = new URLSearchParams();
+  const keyword = el('consistency-keyword').value.trim();
+  if (keyword) params.set('keyword', keyword);
+  if (el('consistency-only-diff').checked) params.set('onlyInconsistent', '1');
+  const query = params.toString();
+  const payload = await request(`/api/consistency${query ? `?${query}` : ''}`);
+  state.summaryRows = payload.rows || [];
+  renderConsistency();
+}
+
+function renderConsistency() {
+  const body = el('consistency-body');
+  body.innerHTML = state.summaryRows.map((row) => {
+    const open = state.detailName && state.detailName.toLowerCase() === row.name.toLowerCase();
+    const chain = row.versions.map((item, index) => {
+      const picked = item.version === row.recommendation.version;
+      const projects = item.projects.map((project) => project.name).join('、');
+      const chip = `<span class="ver-chip${picked ? ' pick' : ''}" title="使用项目：${escapeHtml(projects)}">`
+        + `${escapeHtml(item.version)}<em>×${item.count}</em></span>`;
+      if (index === row.versions.length - 1) return chip;
+      return `${chip}<span class="ver-arrow" title="${escapeHtml(item.gapToNext)}">→</span>`;
+    }).join('');
+    const range = row.consistent ? '' : `<div class="ver-range">${escapeHtml(row.lowestVersion)} → ${escapeHtml(row.highestVersion)}：${escapeHtml(row.rangeGap)}</div>`;
+    const verdict = row.consistent
+      ? '<span class="tag ok">版本一致</span>'
+      : `<span class="tag bad">版本不一致 · ${row.versions.length} 个版本</span>`;
+    return `<tr>
+      <td class="mono">${escapeHtml(row.name)}</td>
+      <td>${row.projectCount} 个项目<br><span class="sub-text">${row.entryCount} 条登记</span></td>
+      <td><div class="ver-chain">${chain}</div>${range}</td>
+      <td>${verdict}</td>
+      <td><span class="pick-ver">${escapeHtml(row.recommendation.version)}</span>
+        <div class="pick-reason">${escapeHtml(row.recommendation.reason)}</div></td>
+      <td class="actions">
+        <button type="button" class="link" data-consistency-detail="${escapeHtml(row.name)}">${open ? '收起明细' : '查看明细'}</button>
+      </td>
+    </tr>`;
+  }).join('');
+  el('consistency-empty').classList.toggle('hidden', state.summaryRows.length > 0);
+  const inconsistent = state.summaryRows.filter((row) => !row.consistent).length;
+  el('consistency-summary').textContent = `共 ${state.summaryRows.length} 条依赖，其中 ${inconsistent} 条在不同项目间版本不一致（已排在最前面）`;
+}
+
+async function openDetail(name) {
+  const detail = await request(`/api/consistency/${encodeURIComponent(name)}`);
+  state.detailName = detail.name;
+  state.detail = detail;
+  el('consistency-detail').classList.remove('hidden');
+  el('unify-result').classList.add('hidden');
+  renderDetail();
+  renderConsistency();
+}
+
+function closeDetail() {
+  state.detailName = '';
+  state.detail = null;
+  state.previewPlan = null;
+  el('consistency-detail').classList.add('hidden');
+  renderConsistency();
+}
+
+function renderDetail() {
+  const detail = state.detail;
+  el('detail-title').textContent = `${detail.name}：各项目登记明细`;
+
+  const chain = detail.versions.map((item, index) => {
+    const tail = index === detail.versions.length - 1
+      ? ''
+      : `<div class="reason-gap">${escapeHtml(item.version)} → ${escapeHtml(detail.versions[index + 1].version)}：${escapeHtml(item.gapToNext)}</div>`;
+    return tail;
+  }).join('');
+  el('detail-reason').innerHTML = `共 ${detail.projectCount} 个项目使用、${detail.entryCount} 条登记。`
+    + (detail.consistent
+      ? '所有登记版本一致，不需要统一。'
+      : `<div class="reason-line">版本从低到高：${detail.versions.map((item) => escapeHtml(item.version)).join(' → ')}，最低 ${escapeHtml(detail.lowestVersion)} 与最高 ${escapeHtml(detail.highestVersion)} 之间${escapeHtml(detail.rangeGap)}</div>${chain}`
+        + `<div class="reason-pick">推荐统一到 <strong>${escapeHtml(detail.recommendation.version)}</strong>：${escapeHtml(detail.recommendation.reason)}</div>`);
+
+  const target = el('unify-target');
+  target.innerHTML = detail.versions
+    .map((item) => `<option value="${escapeHtml(item.version)}">${escapeHtml(item.version)}（${item.count} 个项目在用）</option>`)
+    .join('');
+  target.value = detail.recommendation.version;
+  el('unify-bar').classList.toggle('hidden', detail.consistent);
+
+  el('detail-body').innerHTML = detail.records.map((record) => {
+    const statusTag = record.status === '已弃用' ? 'off' : 'on';
+    return `<tr data-detail-version="${escapeHtml(record.version)}">
+      <td>${escapeHtml(record.projectName)}</td>
+      <td class="mono dep-id">${escapeHtml(record.depId)}</td>
+      <td class="mono">${escapeHtml(record.version)}</td>
+      <td><span class="tag ${statusTag}">${escapeHtml(record.status)}</span></td>
+      <td>${record.license ? escapeHtml(record.license) : '<span class="missing">未填</span>'}</td>
+      <td>${record.owner ? escapeHtml(record.owner) : '<span class="missing">未指定</span>'}</td>
+      <td class="note-cell">${escapeHtml(record.note)}</td>
+      <td class="mono">${escapeHtml(formatTime(record.updatedAt))}</td>
+    </tr>`;
+  }).join('');
+  paintDetailChangeMarks();
+}
+
+// 目标版本换了之后，明细表上把将要被改动的登记先标出来，和预演弹层保持一致
+function paintDetailChangeMarks() {
+  if (!state.detail) return;
+  const target = el('unify-target').value;
+  el('detail-body').querySelectorAll('tr').forEach((row) => {
+    const different = row.dataset.detailVersion !== target;
+    row.classList.toggle('will-change', different && !state.detail.consistent);
+    let mark = row.querySelector('.change-mark');
+    if (different && !state.detail.consistent) {
+      if (!mark) {
+        mark = document.createElement('span');
+        mark.className = 'change-mark';
+        row.cells[2].appendChild(mark);
+      }
+      mark.textContent = '将改动';
+    } else if (mark) {
+      mark.remove();
+    }
+  });
+  const selected = state.detail.versions.find((item) => item.version === target);
+  el('unify-hint').textContent = selected
+    ? `目标版本 ${target}，已有 ${selected.count} 条登记在用，其余登记将被修改`
+    : '';
+}
+
+function openUnifyModal(plan) {
+  state.previewPlan = plan;
+  el('unify-modal-desc').innerHTML = `把依赖 <strong>${escapeHtml(plan.name)}</strong> 统一到 <strong>${escapeHtml(plan.version)}</strong>：`
+    + `共 <strong>${plan.changes.length}</strong> 条登记需要修改，${plan.unchangedCount} 条原本就是该版本、保持不变。`;
+  el('unify-changes-body').innerHTML = plan.changes.length ? plan.changes.map((change) => `<tr>
+      <td>${escapeHtml(change.projectName)}</td>
+      <td class="mono dep-id">${escapeHtml(change.depId)}</td>
+      <td class="mono">${escapeHtml(change.fromVersion)}</td>
+      <td class="mono">${escapeHtml(change.toVersion)}</td>
+      <td>${escapeHtml(change.relation.text)}</td>
+    </tr>`).join('')
+    : '<tr><td colspan="5" class="missing">所有登记都已经是这个版本，没有需要改动的条目</td></tr>';
+  el('unify-confirm-btn').classList.toggle('hidden', plan.changes.length === 0);
+  el('unify-modal').classList.remove('hidden');
+}
+
+function closeUnifyModal() {
+  state.previewPlan = null;
+  el('unify-modal').classList.add('hidden');
+}
+
+async function previewUnify() {
+  if (!state.detail) return;
+  clearNotice();
+  try {
+    const plan = await request('/api/consistency/preview', {
+      method: 'POST',
+      body: JSON.stringify({ name: state.detail.name, version: el('unify-target').value }),
+    });
+    openUnifyModal(plan);
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+
+async function confirmUnify() {
+  const plan = state.previewPlan;
+  if (!plan) return;
+  const button = el('unify-confirm-btn');
+  button.disabled = true;
+  try {
+    const result = await request('/api/consistency/unify', {
+      method: 'POST',
+      body: JSON.stringify({ name: plan.name, version: plan.version, confirmed: true }),
+    });
+    closeUnifyModal();
+    await loadProjects();
+    await loadDeps();
+    await loadConsistency();
+    await openDetail(result.name);
+    renderUnifyResult(result);
+    notify(`已把 ${result.name} 统一到 ${result.version}，共修改 ${result.changedCount} 条登记`, 'ok');
+  } catch (err) {
+    notify(err.message, 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// 统一完成后的回执：这次改了哪些项目、从什么版本改成了什么版本
+function renderUnifyResult(result) {
+  const box = el('unify-result');
+  const projectCount = new Set(result.changed.map((change) => change.projectId)).size;
+  const rows = result.changed.map((change) => `<tr>
+      <td>${escapeHtml(change.projectName)}</td>
+      <td class="mono">${escapeHtml(change.fromVersion)}</td>
+      <td class="mono">${escapeHtml(change.toVersion)}</td>
+      <td>${escapeHtml(change.relation.text)}</td>
+    </tr>`).join('');
+  box.innerHTML = `<div class="unify-result-head">✔ 已统一到 ${escapeHtml(result.version)}：本次改动涉及 ${projectCount} 个项目、共 ${result.changedCount} 条登记，另有 ${result.unchangedCount} 条原本就是该版本</div>
+    <table class="grid compact">
+      <thead><tr><th>项目</th><th>原版本</th><th>改成</th><th>版本关系</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="sub-text">执行时间：${escapeHtml(formatTime(result.changedAt))}</div>`;
+  box.classList.remove('hidden');
 }
 
 // 列表上的操作用事件委托统一处理，列表重绘之后不需要重新绑定
@@ -304,11 +526,41 @@ document.addEventListener('click', async (event) => {
         await request(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
         notify('项目已删除', 'ok');
       }
-      await loadProjects();
-      await loadDeps();
+      await refreshAll();
     } catch (err) {
       notify(err.message, 'error');
     }
+    return;
+  }
+
+  if (node.dataset.consistencyDetail !== undefined) {
+    clearNotice();
+    const name = node.dataset.consistencyDetail;
+    if (state.detailName && state.detailName.toLowerCase() === name.toLowerCase()) {
+      closeDetail();
+    } else {
+      openDetail(name).catch((err) => notify(err.message, 'error'));
+    }
+    return;
+  }
+
+  if (node.id === 'detail-close') {
+    closeDetail();
+    return;
+  }
+
+  if (node.id === 'unify-preview-btn') {
+    previewUnify();
+    return;
+  }
+
+  if (node.id === 'unify-confirm-btn') {
+    confirmUnify();
+    return;
+  }
+
+  if (node.id === 'unify-cancel-btn') {
+    closeUnifyModal();
     return;
   }
 
@@ -327,8 +579,7 @@ document.addEventListener('click', async (event) => {
       await request(`/api/deps/${encodeURIComponent(node.dataset.depDelete)}`, { method: 'DELETE' });
       if (state.editingId === node.dataset.depDelete) closeDepForm();
       notify('登记已删除', 'ok');
-      await loadProjects();
-      await loadDeps();
+      await refreshAll();
     } catch (err) {
       notify(err.message, 'error');
     }
@@ -376,9 +627,35 @@ el('operator').addEventListener('change', () => {
   window.localStorage.setItem(OPERATOR_KEY, currentOperator());
 });
 
+el('consistency-apply').addEventListener('click', () => {
+  clearNotice();
+  loadConsistency().catch((err) => notify(err.message, 'error'));
+});
+el('consistency-keyword').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    loadConsistency().catch((err) => notify(err.message, 'error'));
+  }
+});
+el('consistency-only-diff').addEventListener('change', () => {
+  loadConsistency().catch((err) => notify(err.message, 'error'));
+});
+el('consistency-refresh').addEventListener('click', () => {
+  clearNotice();
+  loadConsistency().catch((err) => notify(err.message, 'error'));
+});
+el('unify-target').addEventListener('change', paintDetailChangeMarks);
+el('unify-modal').addEventListener('click', (event) => {
+  if (event.target === el('unify-modal')) closeUnifyModal();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !el('unify-modal').classList.contains('hidden')) closeUnifyModal();
+});
+
 // 页面打开时先把项目与依赖登记拉一遍，项目决定登记表单里能选哪些归属
 restoreOperator();
 loadHealth();
 loadProjects()
   .then(loadDeps)
+  .then(loadConsistency)
   .catch((err) => notify(err.message, 'error'));

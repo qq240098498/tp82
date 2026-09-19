@@ -84,6 +84,48 @@ app.delete('/api/deps/:id', (req, res) => {
   }
 });
 
+// 版本对照：按依赖名把各项目的登记汇总到一张表，支持只看版本不一致的
+app.get('/api/consistency', (req, res) => {
+  try {
+    res.json(api.listSummary({
+      keyword: api.readQuery(req.query, 'keyword'),
+      onlyInconsistent: req.query.onlyInconsistent === '1' || req.query.onlyInconsistent === 'true',
+    }));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 下钻：某一条依赖在每个项目里的具体登记条目
+app.get('/api/consistency/:name', (req, res) => {
+  try {
+    res.json(api.getDetail(req.params.name));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 统一版本预演：只返回改动计划，不写数据
+app.post('/api/consistency/preview', (req, res) => {
+  try {
+    res.json(api.previewUnify(req.body));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 执行统一：必须带 confirmed: true，且服务端会重新算一遍改动清单
+function handleUnify(req, res) {
+  try {
+    res.json(api.executeUnify(req.body));
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+app.post('/api/consistency/unify', handleUnify);
+app.post('/api/consistency/execute', handleUnify);
+
 // 未匹配到的接口路径统一返回说明，避免前端拿到一串页面内容
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: { code: 'API_NOT_FOUND', message: '接口不存在', field: '' } });

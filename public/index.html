@@ -111,7 +111,97 @@
         </div>
       </form>
     </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>版本对照</h2>
+        <div class="filters">
+          <input id="consistency-keyword" placeholder="搜索依赖名" maxlength="60">
+          <label class="check-label"><input type="checkbox" id="consistency-only-diff"> 只看版本不一致</label>
+          <button type="button" id="consistency-apply" class="ghost">筛选</button>
+          <button type="button" id="consistency-refresh" class="ghost">刷新</button>
+        </div>
+      </div>
+      <div class="panel-tip" id="consistency-summary">同一个依赖散在多个项目里时，在这里对照版本、下钻明细并统一版本</div>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>依赖名称</th>
+              <th>使用情况</th>
+              <th>版本分布（从低到高）</th>
+              <th>结论</th>
+              <th>推荐版本与依据</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="consistency-body"></tbody>
+        </table>
+      </div>
+      <p class="empty-tip hidden" id="consistency-empty">没有符合条件的依赖</p>
+
+      <div class="detail-box hidden" id="consistency-detail">
+        <div class="detail-head">
+          <h3 id="detail-title">依赖明细</h3>
+          <button type="button" class="ghost" id="detail-close">收起</button>
+        </div>
+        <div class="detail-reason" id="detail-reason"></div>
+        <div class="table-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>项目</th>
+                <th>登记编号</th>
+                <th>版本</th>
+                <th>状态</th>
+                <th>许可</th>
+                <th>责任人</th>
+                <th>备注</th>
+                <th>更新时间</th>
+              </tr>
+            </thead>
+            <tbody id="detail-body"></tbody>
+          </table>
+        </div>
+        <div class="unify-bar" id="unify-bar">
+          <label>统一到
+            <select id="unify-target"></select>
+          </label>
+          <span class="unify-hint" id="unify-hint"></span>
+          <button type="button" id="unify-preview-btn">先做预演</button>
+        </div>
+        <div class="unify-result hidden" id="unify-result"></div>
+      </div>
+    </section>
   </main>
+
+  <div class="modal-mask hidden" id="unify-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>统一版本预演</h3>
+      </div>
+      <div class="modal-desc" id="unify-modal-desc"></div>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>项目</th>
+              <th>需要改的登记</th>
+              <th>当前版本</th>
+              <th>改成</th>
+              <th>版本关系</th>
+            </tr>
+          </thead>
+          <tbody id="unify-changes-body"></tbody>
+        </table>
+      </div>
+      <p class="unify-confirm-tip">预演只列出将要发生的改动，还没有写任何数据。确认后才会真正修改这些登记。</p>
+      <div class="modal-actions">
+        <button type="button" id="unify-confirm-btn">确认执行统一</button>
+        <button type="button" class="ghost" id="unify-cancel-btn">取消</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>
